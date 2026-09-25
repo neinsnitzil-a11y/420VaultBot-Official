@@ -1,0 +1,12 @@
+420VaultBot v5.5.4 — Portable Recommended Roles
+
+Create Required Roles now creates/maps the full recommended portable set when missing:
+- TOS Accepted
+- Verified
+- Unverified
+- Paid Member
+- Beta Tester
+
+The bot stores role IDs after creation/mapping. It does not create Producer, Artist, Listener, Owner, or unrelated roles. Server owner and Discord Administrator permissions remain name-independent admin bypasses.
+
+TOS acceptance assigns both TOS Accepted and Verified. Re-verification removes both until the current Terms are accepted again.

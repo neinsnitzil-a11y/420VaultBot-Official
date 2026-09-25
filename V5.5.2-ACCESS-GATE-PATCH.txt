@@ -1,0 +1,22 @@
+420VaultBot v5.5.3 — Server Role + TOS Gate Patch
+
+Role compatibility for the target server:
+- Owner -> administrator/overseer authority
+- ToSAccepted -> Terms-verified role
+- Payed_Member -> paid-member access role
+- Beta Tester -> beta access bypass (TOS still required)
+- Unverified -> onboarding restriction role
+
+Behavior:
+- New non-admin members are assigned Unverified and routed to the persistent Terms panel.
+- Unverified members are hidden from other gated channels when the server gate is applied.
+- Before verification/access, the only public TEXT command is 420_subscribe.
+- Terms verification is performed from the persistent #terms panel.
+- Owner/admin members bypass the TOS command gate so commands such as 420_exportserver work.
+- Existing ToSAccepted is recognized as verified even if an older database acceptance record is absent.
+- Existing Payed_Member is recognized as paid access.
+- Older auto-mapped Verified/Subscribed/Vault Overseer settings migrate to ToSAccepted/Payed_Member/Owner when those preferred roles already exist.
+- Generic duplicate CheckFailure output is suppressed when the access gate already sent a useful explanation.
+
+IMPORTANT DISCORD ROLE HIERARCHY:
+The Discord role assigned to 420VaultBot must be ABOVE ToSAccepted, Payed_Member, and Unverified or Discord will refuse role changes. No code can bypass Discord's role hierarchy.

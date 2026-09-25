@@ -1,0 +1,12 @@
+420VaultBot v5.5.5 - Independent Heartbeat / Windows Background Runtime
+
+- Dedicated daemon thread checks bot readiness every 30 seconds by default.
+- Writes data/heartbeat.json atomically for external health inspection.
+- On Windows, SetThreadExecutionState requests ES_SYSTEM_REQUIRED while the bot
+  is running. ES_DISPLAY_REQUIRED is intentionally NOT used, so the screen may
+  turn off while Windows keeps the system awake.
+- Configure with HEARTBEAT_INTERVAL_SECONDS and HEARTBEAT_PREVENT_SYSTEM_SLEEP.
+- run_420vault_watchdog.bat restarts the Python process 10 seconds after an
+  unexpected exit.
+- This cannot keep the bot alive through shutdown, hibernation, power loss,
+  Internet loss, or a lid-close policy that forces sleep/hibernate/shutdown.

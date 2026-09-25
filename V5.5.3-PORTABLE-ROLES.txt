@@ -1,0 +1,12 @@
+420VaultBot v5.5.3 — Portable Role Mapping
+
+- Removed server-specific role-name assumptions from access decisions.
+- Existing roles are selected through Admin GUI and stored by immutable Discord role ID.
+- Renaming a mapped role does not break 420Vault access.
+- Server owner / members with Discord Administrator permission always retain admin access.
+- Optional custom bot-admin role can be mapped by ID.
+- Added Admin GUI > Access Roles > Create Required Roles.
+- That explicit action creates ONLY missing core roles: TOS Accepted, Unverified, Paid Member.
+- Beta Tester and custom admin roles are optional and are never auto-created.
+- Startup validates configured role IDs but does not create or guess roles.
+- Unrelated server roles (Producer, Listener, Artist, other bots, etc.) are ignored.

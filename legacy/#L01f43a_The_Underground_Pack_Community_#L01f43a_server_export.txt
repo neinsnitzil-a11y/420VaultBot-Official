@@ -1,0 +1,45 @@
+SERVER EXPORT
+Name: 🐺 The Underground Pack Community 🐺
+ID: 1332518989032849438
+Owner: theundergroundpack (1332518192169615393)
+Created: 2025-01-25 01:14:43.991000+00:00
+Members: 76
+
+ROLES:
+- 420Vault (ID: 1467933387737272373)
+- Manager (ID: 1336083522653519882)
+- Moderator (ID: 1336083408652341249)
+- @everyone (ID: 1332518989032849438)
+
+CHANNELS:
+
+[Category] Central Hub (ID: 1332518989481508864)
+  # producer-hangout (Text | ID: 1467940088297291860)
+  # artist-hangout (Text | ID: 1467940138133753939)
+  # chat-room (Text | ID: 1332518989481508866)
+  # collaborate-and-connect (Text | ID: 1332519759270514749)
+  # underground-events (Text | ID: 1332520237156798566)
+  # self-promoting (Text | ID: 1332826546523738142)
+  # send-for-feedback (Text | ID: 1338208414114910308)
+  # music-playlists (Text | ID: 1346564011705241670)
+
+[Category] Voice Channels (ID: 1332518989481508865)
+  🔊 Voice Chat Room (Voice | ID: 1332518989481508867)
+  🔊 Studio-3 (Voice | ID: 1467939974111297845)
+  🔊 Studio-2 (Voice | ID: 1467939920365490207)
+  🔊 Studio-1 (Voice | ID: 1467939855156908052)
+
+[Category] Music Vault (ID: 1467939370165338224)
+  # expansion-banks (Text | ID: 1467939693474746531)
+  # plugins (Text | ID: 1467939571491803340)
+  # drum-kits (Text | ID: 1467939539334074449)
+  # presets (Text | ID: 1467939296227885118)
+  # beats (Text | ID: 1467939184999403695)
+  # loops (Text | ID: 1467939225986142416)
+
+UNCATEGORIZED CHANNELS:
+# rules (Text | ID: 1332519525593387008)
+# suggestions (Text | ID: 1332520154550239252)
+# complaints (Text | ID: 1332520302571425923)
+# announcements (Text | ID: 1332520619044241418)
+# 420vaultbot (Text | ID: 1467933481022783620)
