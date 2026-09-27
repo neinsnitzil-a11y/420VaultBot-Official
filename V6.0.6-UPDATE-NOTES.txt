@@ -1,0 +1,8 @@
+420VaultBot v6.0.6 — Site Search Live Web + Available Websites
+
+- Search by Site now supports Library, Live, or Both.
+- Both merges live public-web results with indexed Link Library results and deduplicates URLs.
+- Results are labeled 📚 (library), 🌐 (live), or 📚🌐 (both).
+- Added Available Websites button showing indexed domains and link counts.
+- Available website list is generated from unified TXT/list parts plus managed DB links.
+- Live search is public-web only and does not bypass authentication, CAPTCHA, robots controls, or protected pages.

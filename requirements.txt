@@ -1,0 +1,10 @@
+discord.py>=2.4,<3
+python-dotenv>=1.0,<2
+aiohttp>=3.10,<4
+
+stripe>=11,<14
+
+# Universal Link Library scraper uses aiohttp already included.
+
+# Google Drive RAR filename parsing (listing only)
+rarfile>=4.2

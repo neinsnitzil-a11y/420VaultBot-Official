@@ -1,0 +1,12 @@
+420VaultBot v5.8.5
+
+- Physical Vault playable preview is WAV/MP3 only.
+- A search automatically loads the first WAV/MP3 match as the native Discord audio attachment/player.
+- Clicking another WAV/MP3 result swaps the player in the same browser message; no extra preview follow-up message.
+- Presets such as .fst are treated as normal downloadable files, never audio.
+- LinkSearchService now uses the same list discovery as LinkLibrary, including lists.txt, lists_part_N.txt and all future links_part_N.txt scraper files.
+- Successful scraper saves reload the runtime link cache immediately.
+- Watchdog title/version updated to v5.8.5.
+- Release packaging uses the correct 420VaultBot_v5.8.5 root folder and excludes live secrets/databases/virtualenv/cache/git metadata.
+
+Discord limitation: bots cannot force client-side autoplay. The native player is displayed automatically; selecting another WAV/MP3 is one click to switch the loaded player.

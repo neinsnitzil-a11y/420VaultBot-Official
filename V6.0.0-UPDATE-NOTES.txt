@@ -1,0 +1,15 @@
+420VaultBot v6.0.0
+
+MAJOR UPDATE: LIVE USER LIBRARY STATISTICS
+
+- 420_vault_stats is now a live multi-source user dashboard.
+- Physical Vault: files, folders, indexed byte size, file types, online/offline state, last scan.
+- Google Drive: files, folders, known indexed byte size, status, last sync, and Google-native items whose byte size is unavailable.
+- Link Library: unique searchable URLs, managed DB links, and source-list count.
+- Audio: WAV count, MP3 count, total playable count.
+- Combined: Physical + Drive file count and known storage total.
+- Totals are queried when the command runs. New Physical Vault content is reflected after scan/reindex; new Drive content after Drive sync.
+- If removable Physical Vault storage is offline, its last indexed size remains visible instead of being reported as zero.
+- Existing v5.8.9 user commands and GUI systems are retained.
+
+VERSION: 6.0.0

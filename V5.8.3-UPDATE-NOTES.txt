@@ -1,0 +1,31 @@
+420VaultBot v5.8.3 - Vault Media Browser + Safe Update System
+
+AUDIO / VAULT BROWSER
+- Audio results are marked with a speaker icon.
+- Selecting WAV/MP3/AIFF/FLAC/OGG/M4A/AAC/OPUS/WMA automatically sends a playable Discord preview.
+- Original download is now a separate Download Selected button.
+- Large audio supports FFmpeg-generated compressed previews.
+- Generated large-file previews are cached under data/preview_cache.
+- No Vault re-index is required for preview support when existing indexed full paths are valid.
+
+ADMIN GUI
+- Added Audio Previews section.
+- Toggle previews.
+- Configure preview duration, bitrate and cache limit.
+- Clear preview cache.
+- Added Updates & Recovery section.
+- Install a full-build ZIP or extracted build folder from the Admin GUI.
+- Create/list persistent-data backups.
+
+UPDATER
+- update.bat/update.py accept a NORMAL complete 420VaultBot ZIP or extracted build folder.
+- No update_manifest.json/payload folder is required.
+- Preserves: .env, data, config, linklists, credentials, google_drive, vault_index, backups and logs.
+- This includes the primary SQLite database, license/activation state, Vault index/settings, Google Drive DB state/secrets stored under data, subscriptions/TOS/config and other DB-backed state.
+- Creates a timestamped backup before replacing application files.
+- Built-in updater and manual updater share the same update engine.
+- Restart is required after installing an update from the running Admin GUI.
+
+VALIDATION
+- Python source compilation completed successfully.
+- Full unit suite could not execute in the build sandbox because discord.py is not installed in the sandbox runtime; import stopped before tests executed.
