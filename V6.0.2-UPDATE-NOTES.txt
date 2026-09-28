@@ -1,9 +1,0 @@
-420VaultBot v6.0.2
-
-- Added Restart Bot button to Admin > Updates & Recovery.
-- Restart button acknowledges Discord first, audits the action, then closes the bot cleanly.
-- The packaged run_420vault_watchdog.bat automatically starts the process again.
-- Update installer completion message now points admins to the Restart Bot button.
-- Updated built-in admin manual restart guidance.
-
-IMPORTANT: automatic restart requires running the bot through the packaged watchdog. If launched directly with python -m app.bot, the button cleanly stops the process but there is no external supervisor to start it again.
