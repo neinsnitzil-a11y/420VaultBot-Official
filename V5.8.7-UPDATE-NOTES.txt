@@ -1,2 +1,0 @@
-420VaultBot v5.8.7
-Added direct commands for major feature/admin panels, focused source statistics, expanded Discord manuals, repaired/rebuilt PDFs, and site-filtered link search.
