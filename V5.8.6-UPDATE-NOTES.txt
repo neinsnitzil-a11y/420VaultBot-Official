@@ -1,9 +1,0 @@
-420VaultBot v5.8.6
-
-- Rebuilt and embedded complete User/Admin PDF manuals.
-- Built-in Discord manuals expanded to 14 user chapters and 21 admin chapters.
-- Added 420_features with Physical Vault size/count, Google Drive indexed size/count, total unique links, and feature summary.
-- Added site/domain link search: 420_search_site <domain> [query].
-- Normal 420_search also accepts site:domain query syntax.
-- Site filtering covers bundled legacy lists, scraper-created parts, and managed DB links.
-- Version labels updated to v5.8.6.
