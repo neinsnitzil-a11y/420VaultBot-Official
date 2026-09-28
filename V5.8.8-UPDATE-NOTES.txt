@@ -1,8 +1,0 @@
-420VaultBot v5.8.8 - GUI-FIRST CONTROLS
-
-- Removed the v5.8.7 direct admin-panel shortcut commands. Major configuration remains inside 420_admin.
-- 420_features is now a Feature Center GUI with live Vault/Drive/Link totals and buttons for Link Search, Search by Site, Vault, Drive, Remote and Refresh.
-- Added Search by Site button directly to the normal 420_search browser.
-- Added Library Stats button to Admin > Overview.
-- Admin Dashboard remains the authoritative GUI for scraper, links, audio, roles, channels, TOS, licensing, subscriptions, payments, transactions, remote servers, security and updates.
-- Reworked manuals for GUI-first operation.
