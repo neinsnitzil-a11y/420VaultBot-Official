@@ -1,0 +1,1794 @@
+# 420bot.py 
+
+import discord
+from discord.ext import commands, tasks # Import tasks for background loop
+import asyncio
+import random
+import os
+import re
+import logging
+import sys
+import sqlite3 
+from urllib.parse import urlparse
+from typing import List, Dict, Any, Optional, Tuple
+import json
+import hashlib # For license generation
+import datetime # For license expiration
+
+
+#lockdown
+LOCKDOWN_MODE = False
+
+# ==============================
+# 🔐 HELPERS
+# ==============================
+def has_role(ctx, role_name: str) -> bool:
+    return any(role.name == role_name for role in ctx.author.roles)
+
+def is_admin(ctx) -> bool:
+    return ctx.author.guild_permissions.administrator
+
+def lockdown_guard(ctx):
+    if LOCKDOWN_MODE and not is_admin(ctx):
+        raise commands.CheckFailure("Bot is currently in lockdown mode.")
+    return True
+
+def requires_role(role_name: str):
+    async def predicate(ctx):
+        if not has_role(ctx, role_name) and not is_admin(ctx):
+            raise commands.CheckFailure("You don’t have permission.")
+        return True
+    return commands.check(predicate)
+
+
+# --- VAULT WHISPERER CONFIGURATION CONSTANTS (Hardcoded for directness) ---
+VAULT_PATH = "/mnt/e/420 VAULT" 
+DATABASE_PATH = "./data/vault_files.db" 
+MAX_DISCORD_FILE_SIZE = 25 * 1024 * 1024 # 25 MB in bytes (standard non-Nitro limit)
+
+
+# --- ORIGINAL 420BOT CONFIGURATION SECTION: Adjust these values to control your bot! ---
+PREFIX = "420_" 
+BOT_TOKEN = "REDACTED_ROTATE_SECRET" # YOUR BOT TOKEN DIRECTLY HERE!
+LINKS_FILES = [
+    "lists.txt",
+    "lists_part_2.txt",
+    "lists_part_3.txt",
+    "lists_part_4.txt"
+]
+TARGET_CHANNEL_NAMES = [ 
+    "zenology-bank", "serum-1-and-2-banks", "portal-banks", "midi", 
+    "gross-beat-presets", "omnisphere-bank", "loops", "fx-sounds",
+    "presets-banks", "🥁-drumkits-sounds", "one-shots",  
+    "🔓-cracked-plugins", "🔓keygens"          
+]
+MAX_SEARCH_RESULTS_DISPLAY = 15
+
+
+# --- Ensure data and log directories exist for ALL components ---
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(PROJECT_ROOT, 'data') 
+LOGS_DIR = os.path.join(DATA_DIR, 'logs')
+os.makedirs(DATA_DIR, exist_ok=True) 
+os.makedirs(LOGS_DIR, exist_ok=True) 
+
+# --- Logging Setup for the entire bot ---
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS_DIR, 'combined_bot.log')), # Main log file
+        logging.StreamHandler(sys.stdout) # Also output to console
+    ]
+)
+log = logging.getLogger("420Bot_Unified") # Unified logger for the entire bot
+
+
+# --- GLOBAL VARIABLES & BOT INITIALIZATION (from user's 420bot.py, adapted) ---
+all_loaded_links = [] 
+resolved_target_channels = {} 
+
+intents = discord.Intents.default()
+intents.messages = True
+intents.guilds = True
+intents.message_content = True 
+intents.members = True 
+
+# Instantiate the bot
+bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+
+#licence storage (MODIFIED)
+# Added a secret key for license generation - IMPORTANT: CHANGE THIS TO A STRONG, RANDOM STRING!
+LICENSE_GENERATION_SECRET = "REDACTED_ROTATE_SECRET"
+if LICENSE_GENERATION_SECRET == "REDACTED_ROTATE_SECRET":
+    log.warning("WARNING: LICENSE_GENERATION_SECRET is using default value. CHANGE THIS TO A STRONG, RANDOM STRING!")
+
+
+LICENSE_FILE = f"{DATA_DIR}/licenses.json"
+UNLOCKED_FILE = f"{DATA_DIR}/unlocked_users.json"
+
+# Moved os.makedirs(DATA_DIR, exist_ok=True) to general setup above.
+
+def load_json(path, default):
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                log.error(f"Error decoding JSON from {path}. Returning default.")
+                return default
+    return default
+
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=4)
+
+licenses = load_json(LICENSE_FILE, {})
+unlocked_users = load_json(UNLOCKED_FILE, {})
+
+
+# --- FIX START ---
+# Moved DATABASE.PY, UTILS.PY, and ORIGINAL 420BOT Helper Functions here
+# to ensure they are defined before bot events or commands try to call them.
+
+
+# --- DATABASE.PY (Integrated directly) ---
+class DatabaseManager:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._initialize_db()
+        log.info(f"DatabaseManager initialized for '{self.db_path}'") 
+
+    def _initialize_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS vault_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    filename TEXT NOT NULL,
+                    full_path TEXT NOT NULL UNIQUE,
+                    folder TEXT NOT NULL,
+                    extension TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    checksum TEXT UNIQUE
+                )
+            ''')
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_filename ON vault_files (filename COLLATE NOCASE)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_folder ON vault_files (folder COLLATE NOCASE)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_extension ON vault_files (extension)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_size ON vault_files (file_size)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_checksum ON vault_files (checksum)")
+            conn.commit()
+        log.info("Database schema and indices verified/created.")
+
+    def _execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+                results = [dict(row) for row in cursor.fetchall()]
+                return results
+        except sqlite3.Error as e:
+            log.error(f"Database error during query: {query} with params {params}. Error: {e}")
+            return []
+
+    def get_file_by_id(self, file_id: int) -> Optional[Dict[str, Any]]:
+        sql_query = "SELECT id, filename, full_path, folder, extension, file_size FROM vault_files WHERE id = ?"
+        results = self._execute_query(sql_query, (file_id,))
+        return results[0] if results else None
+
+    def search_files(self, query_string: str, limit: int = 10) -> List[Dict[str, Any]]:
+        if not query_string:
+            return []
+        keywords = query_string.split()
+        conditions = []
+        params = []
+        for keyword in keywords:
+            conditions.append("(filename COLLATE NOCASE LIKE ? OR folder COLLATE NOCASE LIKE ?)")
+            params.extend([f"%{keyword}%", f"%{keyword}%"])
+        where_clause = " AND ".join(conditions)
+        sql_query = f"""
+            SELECT id, filename, folder, extension, file_size FROM vault_files
+            WHERE {where_clause}
+            ORDER BY filename COLLATE NOCASE
+            LIMIT ?
+        """
+        params.append(limit)
+        return self._execute_query(sql_query, tuple(params))
+
+    def get_random_file(self) -> Optional[Dict[str, Any]]:
+        sql_query = "SELECT id, filename, full_path, folder, extension, file_size FROM vault_files ORDER BY RANDOM() LIMIT 1"
+        results = self._execute_query(sql_query)
+        return results[0] if results else None
+
+    def get_stats(self) -> Dict[str, Any]:
+        total_files_query = "SELECT COUNT(*) FROM vault_files"
+        total_size_query = "SELECT SUM(file_size) FROM vault_files"
+        last_modified_query = "SELECT MAX(modified_at) FROM vault_files" 
+        total_files = self._execute_query(total_files_query)[0]['COUNT(*)']
+        total_size_bytes = self._execute_query(total_size_query)[0]['SUM(file_size)'] or 0
+        last_scan_time = self._execute_query(last_modified_query)[0]['MAX(modified_at)']
+        return {
+            "total_indexed_files": total_files,
+            "total_storage_size_bytes": total_size_bytes,
+            "last_scan_time": last_scan_time
+        }
+
+    def search_by_extension(self, extension: str, limit: int = 10) -> List[Dict[str, Any]]:
+        clean_ext = extension.lower().lstrip('.')
+        sql_query = """
+            SELECT id, filename, folder, extension, file_size FROM vault_files
+            WHERE extension = ?
+            ORDER BY filename COLLATE NOCASE
+            LIMIT ?
+        """
+        return self._execute_query(sql_query, (clean_ext, limit))
+
+    def search_by_size(self, operator: str, value_bytes: int, limit: int = 10) -> List[Dict[str, Any]]:
+        if operator not in ('>', '<', '=', '>=', '<='):
+            log.error(f"Invalid size operator: {operator}")
+            return []
+        sql_query = f"""
+            SELECT id, filename, folder, extension, file_size FROM vault_files
+            WHERE file_size {operator} ?
+            ORDER BY file_size DESC
+            LIMIT ?
+        """
+        return self._execute_query(sql_query, (value_bytes, limit))
+
+    def search_by_music_terminology(self, terms: List[str], limit: int = 10) -> List[Dict[str, Any]]:
+        if not terms:
+            return []
+        
+        conditions = []
+        params = []
+        
+        for term in terms:
+            conditions.append("(filename COLLATE NOCASE LIKE ? OR folder COLLATE NOCASE LIKE ?)")
+            params.extend([f"%{term}%", f"%{term}%"])
+        
+        where_clause = " AND ".join(conditions)
+        sql_query = f"""
+            SELECT id, filename, folder, extension, file_size FROM vault_files
+            WHERE {where_clause}
+            ORDER BY filename COLLATE NOCASE
+            LIMIT ?
+        """
+        params.append(limit)
+        return self._execute_query(sql_query, tuple(params))
+
+
+    def get_all_files_paginated(self, page: int, page_size: int = 20) -> List[Dict[str, Any]]:
+        offset = (page - 1) * page_size
+        sql_query = "SELECT id, filename, folder, extension, file_size FROM vault_files ORDER BY folder, filename LIMIT ? OFFSET ?"
+        return self._execute_query(sql_query, (page_size, offset))
+
+    def get_folder_contents_paginated(self, folder_path: str, page: int, page_size: int = 20) -> List[Dict[str, Any]]:
+        offset = (page - 1) * page_size
+        sql_query = """
+            SELECT id, filename, folder, extension, file_size FROM vault_files 
+            WHERE folder COLLATE NOCASE LIKE ? 
+            ORDER BY filename COLLATE NOCASE LIMIT ? OFFSET ?
+        """
+        return self._execute_query(sql_query, (f"{folder_path}%", page_size, offset))
+
+    def get_unique_folders_paginated(self, parent_folder: str = '', page: int = 1, page_size: int = 10) -> List[str]:
+        offset = (page - 1) * page_size 
+        search_path_prefix = os.path.join(parent_folder, '')
+        
+        sql_query = f"""
+            SELECT DISTINCT folder
+            FROM vault_files
+            WHERE folder LIKE ?
+            ORDER BY folder COLLATE NOCASE
+            LIMIT ? OFFSET ?
+        """
+        params = (f"{search_path_prefix}%", page_size, offset)
+        full_folders = [row['folder'] for row in self._execute_query(sql_query, params)]
+        
+        unique_subfolders = set()
+        for fpath in full_folders:
+            relative_path = os.path.relpath(fpath, parent_folder)
+            if relative_path == ".": continue
+            first_segment = relative_path.split(os.sep)[0]
+            unique_subfolders.add(os.path.join(parent_folder, first_segment))
+        return sorted(list(unique_subfolders))
+    
+    def count_files_in_folder(self, folder_path: str) -> int:
+        sql_query = """
+            SELECT COUNT(*) FROM vault_files 
+            WHERE folder COLLATE NOCASE LIKE ? 
+        """
+        result = self._execute_query(sql_query, (f"{folder_path}%",))
+        return result[0]['COUNT(*)'] if result else 0
+
+    def count_unique_subfolders(self, parent_folder: str = '') -> int:
+        search_path_prefix = os.path.join(parent_folder, '')
+        full_folders = [row['folder'] for row in self._execute_query("SELECT DISTINCT folder FROM vault_files WHERE folder LIKE ?", (f"{search_path_prefix}%",))]
+        unique_next_level_folders = set()
+        for fpath in full_folders:
+            if fpath == parent_folder: continue
+            relative_path = os.path.relpath(fpath, parent_folder)
+            if relative_path == ".": continue
+            first_segment = relative_path.split(os.sep)[0]
+            if first_segment:
+                unique_next_level_folders.add(first_segment)
+        return len(unique_next_level_folders)
+
+
+# --- Instantiate Database Manager ---
+# This must happen after the DatabaseManager class is defined.
+db_manager = DatabaseManager(DATABASE_PATH)
+
+
+# --- UTILS.PY (Integrated directly) ---
+
+def format_bytes(size_bytes: int) -> str:
+    if size_bytes == 0:
+        return "0 B"
+    units = ("B", "KB", "MB", "GB", "TB")
+    i = 0
+    while size_bytes >= 1024 and i < len(units) - 1:
+        size_bytes /= 1024
+        i += 1
+    return f"{size_bytes:.2f} {units[i]}"
+
+def parse_size_string(size_string: str) -> Optional[int]:
+    size_string = size_string.strip().upper()
+    if not size_string:
+        return None
+    try:
+        if size_string.endswith("KB"):
+            value = float(size_string[:-2]) * 1024
+        elif size_string.endswith("MB"):
+            value = float(size_string[:-2]) * 1024**2
+        elif size_string.endswith("GB"):
+            value = float(size_string[:-2]) * 1024**3
+        elif size_string.endswith("TB"):
+            value = float(size_string[:-2]) * 1024**4
+        elif size_string.isdigit():
+            value = float(size_string)
+        else:
+            return None
+        return int(value)
+    except ValueError:
+        return None
+
+def paginate_list(data_list: List[Any], page: int, page_size: int) -> Tuple[List[Any], int]:
+    if not isinstance(data_list, list):
+        log.error(f"paginate_list received non-list data: {type(data_list)}")
+        return [], 0
+    total_items = len(data_list)
+    if total_items == 0:
+        return [], 0
+    total_pages = (total_items + page_size - 1) // page_size
+    if page < 1:
+        page = 1
+    elif page > total_pages:
+        page = total_pages
+    start_index = (page - 1) * page_size
+    end_index = start_index + page_size
+    return data_list[start_index:end_index], total_pages
+
+async def run_indexer_script_async():
+    project_root = os.path.dirname(os.path.abspath(sys.argv[0]))
+    indexer_script_path = os.path.join(project_root, 'indexer.py')
+
+    if not os.path.exists(indexer_script_path):
+        log.error(f"Indexer script not found at: {indexer_script_path}")
+        raise FileNotFoundError(f"Indexer script not found: {indexer_script_path}")
+
+    command = [sys.executable, indexer_script_path]
+    log.info(f"Starting indexer script in background: {' '.join(command)}")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if stdout:
+            log.info(f"Indexer (stdout):\n{stdout.decode().strip()}")
+        if stderr:
+            log.error(f"Indexer (stderr):\n{stderr.decode().strip()}")
+        
+        if process.returncode != 0:
+            log.error(f"Indexer script exited with non-zero code: {process.returncode}")
+            raise Exception(f"Indexer script failed with code {process.returncode}")
+        log.info("Indexer script completed successfully.")
+    except Exception as e:
+        log.critical(f"Failed to run indexer script asynchronously: {e}", exc_info=True)
+        raise
+
+# --- ORIGINAL 420BOT Helper Functions (now defined in global scope for clarity) ---
+# (load_all_links_from_files, resolve_target_channels, get_clean_url_path, search_links_by_keyword, dispatch_random_match)
+
+def load_all_links_from_files(filenames: list):
+    """Loads all links from a list of specified text files into a single list."""
+    links = set() 
+    total_files_processed = 0
+    total_links_found_in_files = 0
+    
+    for filename in filenames:
+        try:
+            with open(os.path.join(PROJECT_ROOT, filename), 'r', encoding='utf-8') as f: # Use PROJECT_ROOT for filenames
+                links_in_current_file = 0
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and not line.startswith('---'):
+                        links.add(line)
+                        links_in_current_file += 1
+            log.info(f"Successfully loaded {links_in_current_file} links from '{filename}'.")
+            total_files_processed += 1
+            total_links_found_in_files += links_in_current_file
+        except FileNotFoundError:
+            log.warning(f"The file '{filename}' was not found. Skipping this file.")
+        except Exception as e:
+            log.error(f"Failed to load links from '{filename}': {e}. Skipping this file.")
+            
+    log.info(f"Finished loading from {total_files_processed} files. Total unique links loaded: {len(links)}.")
+    return list(links) 
+
+async def resolve_target_channels():
+    """
+    Resolves TARGET_CHANNEL_NAMES to actual Discord Channel objects across all guilds the bot is in.
+    Stores resolved objects in `resolved_target_channels` dictionary.
+    """
+    global resolved_target_channels
+    resolved_target_channels.clear() 
+
+    log.info("Attempting to resolve configured target channel names to objects...")
+    
+    for guild in bot.guilds:
+        log.info(f"  Searching in guild: '{guild.name}' ({guild.id})")
+        for target_name in TARGET_CHANNEL_NAMES:
+            channel = discord.utils.get(guild.text_channels, name=target_name) 
+            if not channel: 
+                 channel = discord.utils.get(guild.text_channels, name=target_name.lower())
+
+            if channel:
+                if channel.permissions_for(guild.me).send_messages:
+                    if target_name.lower() not in resolved_target_channels: 
+                        resolved_target_channels[target_name.lower()] = channel
+                        log.info(f"    Resolved '{target_name}' in '{guild.name}' to {channel.mention} (ID: {channel.id})")
+                else:
+                    log.warning(f"    Bot lacks 'Send Messages' permission in '{channel.name}' ({channel.id}) in guild '{guild.name}'. Skipping.")
+
+    if not resolved_target_channels:
+        log.warning("No target channels were successfully resolved or bot lacks permissions in them. Check `TARGET_CHANNEL_NAMES` and bot's guild permissions.")
+    else:
+        log.info(f"Successfully resolved {len(resolved_target_channels)} unique channel names to objects.")
+
+def get_clean_url_path(url):
+    """
+    Extracts a clean, lowercase path from a URL for better keyword matching.
+    Removes unnecessary common words but preserves important keywords like 'zenology'.
+    """
+    parsed_url = urlparse(url)
+    path = parsed_url.path.strip('/').replace('-', ' ').replace('_', ' ')
+    
+    # Remove common file extensions
+    path = re.sub(r'\.(html|php|asp|aspx|jsp|htm|exe|zip|rar|mp3|wav|midi|dmg|pkg)$', '', path, flags=re.IGNORECASE)
+
+    # Remove general filler words, but preserve "zenology" and other important bank/plugin names
+    path = re.sub(
+        r'\b(free|download|effect|effects|collection|collections|preset|presets|kit|kits|pack|packs|bank|banks|vst|midi|loops|one\s*shots|drum\s*kits|sound|sounds|windows|mac|macos|installer|win|setup)\b',
+        '', path,
+        flags=re.IGNORECASE
+    )
+
+    # Normalize spaces and lowercase
+    path = re.sub(r'\s+', ' ', path).strip()
+    return path.lower()
+
+
+def search_links_by_keyword(search_terms: list[str]):
+    """
+    Searches all loaded links where ALL provided search_terms are found
+    in either the cleaned URL path OR the raw URL path.
+    Includes special matching logic for platform/type keywords.
+    Returns a list of matching links.
+    """
+    if not all_loaded_links or not search_terms:
+        return []
+
+    matching_links = []
+
+    for link in all_loaded_links:
+        raw_path_lower = urlparse(link).path.strip('/').lower()
+        cleaned_path_lower = get_clean_url_path(link)
+
+        all_terms_match = True
+
+        for term in search_terms:
+            term_lower = term.lower()
+            term_found_in_link = False
+
+            # Platform / Installer special cases
+            if term_lower == "win":
+                if "windows" in raw_path_lower or ".exe" in raw_path_lower or "installer-win" in raw_path_lower or "win-installer" in raw_path_lower or "for-windows" in raw_path_lower:
+                    term_found_in_link = True
+            elif term_lower == "mac":
+                if "mac" in raw_path_lower or "macos" in raw_path_lower or ".dmg" in raw_path_lower or ".pkg" in raw_path_lower or "installer-mac" in raw_path_lower or "for-mac" in raw_path_lower:
+                    term_found_in_link = True
+            elif term_lower == "installer":
+                if "installer" in raw_path_lower or ".exe" in raw_path_lower or ".dmg" in raw_path_lower or ".pkg" in raw_path_lower or "setup" in raw_path_lower:
+                    term_found_in_link = True
+            else:
+                # Match term in either cleaned path OR raw path
+                if term_lower in cleaned_path_lower or term_lower in raw_path_lower:
+                    term_found_in_link = True
+
+            if not term_found_in_link:
+                all_terms_match = False
+                break
+
+        if all_terms_match:
+            matching_links.append(link)
+
+    return matching_links
+
+# --- NEW: License Generation Helper ---
+def generate_license_code(discord_id: Optional[str] = None, days_valid: Optional[int] = None, max_activations: Optional[int] = None) -> str:
+    """Generates a unique license code based on current time, optional discord_id, and a secret."""
+    seed = f"{datetime.datetime.now().isoformat()}-{random.randint(1000,9999)}-{discord_id or 'UNBOUND'}-{days_valid or 'PERPETUAL'}-{max_activations or 'UNLIMITED'}-{LICENSE_GENERATION_SECRET}"
+    # Use SHA256 for a strong, fixed-size hash
+    raw_hash = hashlib.sha256(seed.encode()).hexdigest().upper()
+    # Format into groups of 4 characters for readability (e.g., XXXX-XXXX-XXXX-XXXX)
+    return '-'.join([raw_hash[i:i+4] for i in range(0, 16, 4)]) # Take first 16 chars for a 4x4 format
+
+#License Unlock Logic (MODIFIED)
+# Constants for license monitoring
+LICENSE_CHECK_INTERVAL_SECONDS = 3600  # Check licenses every hour (3600 seconds)
+
+def validate_license(code: str, user_id: int) -> Tuple[bool, str]:
+    """
+    Validates a license code and attempts to bind it to a user or track activation.
+    Returns (success: bool, message: str)
+    """
+    code = code.strip().upper()
+    user_id_str = str(user_id) # Ensure user ID is always a string for consistent dict keys
+
+    if code not in licenses:
+        return False, "❌ Invalid license code provided."
+
+    lic = licenses[code]
+
+    # --- Check expiration first ---
+    expires_at_str = lic.get("expires_at")
+    if expires_at_str:
+        try:
+            expires_at = datetime.datetime.fromisoformat(expires_at_str)
+            if datetime.datetime.now() > expires_at:
+                if lic.get("status") != "expired": # Only update if not already expired
+                    lic["status"] = "expired"
+                    save_json(LICENSE_FILE, licenses)
+                return False, "❌ Your license has expired."
+        except ValueError:
+            log.error(f"Invalid 'expires_at' format for license {code}: {expires_at_str}. Please fix manually.")
+            # Continue validation, but this license's expiration won't be auto-checked until fixed.
+
+    # --- Check status ---
+    current_status = lic.get("status", "inactive")
+    if current_status == "inactive":
+        return False, "❌ License is inactive. Contact an administrator."
+    if current_status == "revoked":
+        return False, "❌ License has been revoked."
+    if current_status == "expired": # Already caught by date check, but good for explicit status
+        return False, "❌ License has expired."
+
+    # --- Check if already bound to another user ---
+    bound_discord_id = lic.get("discord_id")
+    if bound_discord_id and bound_discord_id != user_id_str:
+        return False, "❌ This license is already bound to another Discord account."
+
+    # --- Check activation limits ---
+    max_activations = lic.get("max_activations")
+    activations_used = lic.get("activations_used", 0)
+
+    if max_activations is not None: # If a maximum activation limit is set
+        if activations_used >= max_activations:
+            # If the user trying to activate is *already* the bound user, allow re-verification.
+            # This handles cases where a user might re-enter their key or the bot restarts.
+            if bound_discord_id == user_id_str:
+                unlocked_users[user_id_str] = True # Ensure they are in the unlocked cache
+                save_json(UNLOCKED_FILE, unlocked_users)
+                return True, "✅ License re-verified (already bound and at maximum activations)."
+            else:
+                return False, f"❌ This license has reached its maximum activation limit of {max_activations}."
+
+    # --- If unbound, bind it to this user ---
+    if bound_discord_id is None:
+        lic["discord_id"] = user_id_str
+        lic["activations_used"] = activations_used + 1
+        lic["last_activated_at"] = datetime.datetime.now().isoformat()
+        save_json(LICENSE_FILE, licenses)
+        unlocked_users[user_id_str] = True # Add user to unlocked cache
+        save_json(UNLOCKED_FILE, unlocked_users)
+        return True, "✅ License accepted and bound to your account!"
+    
+    # --- If already bound to this user, just re-verify ---
+    if bound_discord_id == user_id_str:
+        # We don't increment activations_used for re-entering the key by the same user
+        lic["last_activated_at"] = datetime.datetime.now().isoformat()
+        save_json(LICENSE_FILE, licenses)
+        unlocked_users[user_id_str] = True # Ensure user is in unlocked cache
+        save_json(UNLOCKED_FILE, unlocked_users)
+        return True, "✅ License re-verified. Bot unlocked."
+    
+    return False, "❌ An unknown license validation error occurred. Contact an administrator."
+
+# --- FIX END ---
+
+
+@bot.check
+async def locked_check(ctx):
+    # Tier 1: Absolute Bypass - The Bot's Divine Owner
+    # The bot's owner always has ultimate access, transcending all other checks.
+    if await bot.is_owner(ctx.author):
+        log.debug(f"Access granted: Bot Owner {ctx.author.id}")
+        return True
+
+    # Ensure this is a guild command before checking roles or permissions that require a guild
+    if ctx.guild:
+        # Tier 2: High-Privilege Bypass - Server Administrators (Permission-based)
+        # Any user with Discord's built-in Administrator permission bypasses the lock.
+        if is_admin(ctx): # Uses your existing 'is_admin' helper function
+            log.debug(f"Access granted: Administrator {ctx.author.id} in {ctx.guild.id}")
+            return True
+
+        # Tier 3: Designated Role Bypass - Moderators, Vault Overseers, Beta Testers (Role-based)
+        # These specific roles are explicitly allowed to bypass the license check.
+        # You can add or remove role names from this list as your hierarchy evolves.
+        BYPASS_ROLES = ["Moderator", "Vault Overseer", "Beta tester"]
+        for role_name in BYPASS_ROLES:
+            if has_role(ctx, role_name): # Uses your existing 'has_role' helper function
+                log.debug(f"Access granted: User {ctx.author.id} has bypass role '{role_name}'")
+                return True
+    else:
+        # If it's a DM, roles/admin permissions don't apply.
+        # We can either deny all DMs unless they are the bot owner,
+        # or fall through to allowed_commands/license check if you intend DMs to be usable.
+        # For now, DMs from non-owners will fall through to license check.
+        pass 
+
+    # Tier 4: Always Allowed Commands - Essential Interaction (Help, License Entry, Status)
+    # These commands are accessible to *everyone*, even if they are otherwise locked.
+    # This allows users to request help or enter their license to unlock.
+    allowed_commands = ["help", "enterlicense", "Bot_status", "version"] 
+    if ctx.command and ctx.command.name in allowed_commands:
+        log.debug(f"Access granted: Command '{ctx.command.name}' is universally allowed.")
+        return True
+
+    # Tier 5: The Primary Gate - License Verification for All Other Members
+    # If no bypass or universally allowed command is hit, the user must have an active license.
+    user_id_str = str(ctx.author.id)
+    if user_id_str not in unlocked_users:
+        log.info(f"Access denied: User {ctx.author.id} not unlocked. Prompting for license.")
+        await ctx.send("🔒 **420VaultBot is locked. Enter your license to unlock.**", view=LicenseView(), ephemeral=True)
+        return False
+
+    # If the user passed all checks, access is granted.
+    log.debug(f"Access granted: User {ctx.author.id} is licensed.")
+    return True
+
+
+class LicenseModal(discord.ui.Modal, title="🔓 Enter Your 420Vault License"):
+    license_code = discord.ui.TextInput(
+        label="License Code",
+        placeholder="XXXX-XXXX-XXXX-XXXX", # Updated placeholder for 4x4 format
+        required=True,
+        min_length=19, # Minimum length for XXXX-XXXX-XXXX-XXXX (16 chars + 3 hyphens)
+        max_length=19  # Maximum length
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        success, message = validate_license(self.license_code.value, interaction.user.id)
+        if success:
+            # Optionally grant a role or perform other actions here if needed
+            # e.g., if interaction.guild: await interaction.user.add_roles(discord.utils.get(interaction.guild.roles, name="Licensed User"))
+            await interaction.response.send_message(message, ephemeral=True)
+            log.info(f"User {interaction.user.id} successfully activated license {self.license_code.value}.")
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+            log.warning(f"User {interaction.user.id} failed to activate license {self.license_code.value}. Reason: {message}.")
+
+
+class LicenseView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🔓 Enter License", style=discord.ButtonStyle.green, custom_id="persistent_license_button")
+    async def enter_license(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Check if user is already unlocked to provide better feedback
+        if str(interaction.user.id) in unlocked_users:
+            await interaction.response.send_message("✅ You are already unlocked! No need to enter your license again.", ephemeral=True)
+            return
+        await interaction.response.send_modal(LicenseModal())
+
+LICENSE_CHANNEL_ID = 1469546777056379074  # your channel ID where the license button should be
+
+@bot.event
+async def on_ready():
+    log.info(f"Unified Bot '{bot.user.name}' has awakened! Connected to Discord.")
+    print(f"\n[Unified Bot '{bot.user.name}' has awakened! Connected to Discord.]")
+    log.info(f"Bot ID: {bot.user.id}")
+    print(f"Bot ID: {bot.user.id}")
+    # Using bot.user.id for client_id in invite URL to ensure it's dynamic
+    log.info(f"Invite URL: https://discord.com/oauth2/authorize?client_id={bot.user.id}&permissions=2147483648&scope=bot%20applications.commands") 
+    print(f"Invite URL: https://discord.com/oauth2/authorize?client_id={bot.user.id}&permissions=2147483648&scope=bot%20applications.commands") 
+
+    global all_loaded_links
+    all_loaded_links = load_all_links_from_files(LINKS_FILES) 
+    await resolve_target_channels() 
+
+    if not all_loaded_links:
+        log.critical(f"No external links loaded from '{LINKS_FILES}'. Link search commands will be limited.")
+    else:
+        log.info(f"Bot is ready to search {len(all_loaded_links)} external links.")
+
+    # --- Clear any lingering slash commands ---
+    try:
+        log.info("Clearing old slash commands to ensure a clean prefix-only interface.")
+        bot.tree.clear_commands(guild=None) # Clears all global slash commands
+        await bot.tree.sync(guild=None) # Sync the empty tree
+        log.info("Old slash commands cleared and tree synced.")
+    except Exception as e:
+        log.error(f"Failed to clear old slash commands: {e}", exc_info=True)
+
+    # --- License System Initialization ---
+    bot.add_view(LicenseView()) # Add persistent view for license button
+
+    license_channel = bot.get_channel(LICENSE_CHANNEL_ID)
+    if license_channel:
+        try:
+            # Check if there's already a message with the button to avoid spamming
+            messages = [msg async for msg in license_channel.history(limit=50)]
+            found_existing_button = False
+            for msg in messages:
+                if msg.author == bot.user and msg.embeds and msg.embeds[0].title == "🔐 420VaultBot Locked":
+                    found_existing_button = True
+                    # For simplicity, just check for existence. You could add logic here
+                    # to re-send if the message is too old, or if the view seems broken.
+                    break
+            
+            if not found_existing_button:
+                embed = discord.Embed(
+                    title="🔐 420VaultBot Locked",
+                    description="Click below to enter your license and unlock the bot.\n\n"
+                                "If you don't have a license, contact an administrator.",
+                    color=discord.Color.red()
+                )
+                await license_channel.send(embed=embed, view=LicenseView())
+            else:
+                log.info("Existing license button message found, not sending a new one.")
+        except discord.errors.Forbidden:
+            log.error(f"Bot does not have permissions to send messages in license channel ID {LICENSE_CHANNEL_ID}. Please check permissions.")
+        except Exception as e:
+            log.error(f"Error checking/sending license message in channel {LICENSE_CHANNEL_ID}: {e}", exc_info=True)
+    else:
+        log.warning(f"License channel ID {LICENSE_CHANNEL_ID} not found. License entry message cannot be sent.")
+
+    # Start the background license monitoring task
+    license_monitor_task.start()
+
+    log.info("Unified Bot is fully ready and operational with prefix commands.")
+    print("[Unified Bot is fully ready and operational with prefix commands.]\n")
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send(f"You lack the necessary permissions to perform '{ctx.command.name}'.", ephemeral=True) # Ephemeral for less spam
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"A component of your command is missing. Usage: `{ctx.prefix}{ctx.command.name} {ctx.command.signature}`", ephemeral=True)
+    elif isinstance(error, commands.CommandNotFound):
+        pass 
+    elif isinstance(error, commands.CheckFailure): # Catch our custom locked_check failure
+        # The locked_check already sends its own ephemeral message.
+        pass
+    else:
+        log.error(f"An unexpected error occurred: {error}", exc_info=True)
+        await ctx.send(f"An unknown force briefly resisted my command: `{error}`. I shall overcome!", ephemeral=True)
+
+
+# --- ORIGINAL 420BOT Prefix Commands ---
+
+@bot.command(
+    name="searchkit",
+    help=f"Searches for kits by multiple keywords (e.g., 'omnisphere win installer') and displays up to {MAX_SEARCH_RESULTS_DISPLAY} random matches from external links."
+)
+@commands.has_permissions(send_messages=True)
+async def search_kit_command(ctx, *, search_query: str):
+    search_terms = search_query.lower().split()
+    await ctx.send(
+        f"🔎 **Searching external links for kits matching:** `{ ' '.join(search_terms) }`"
+    )
+
+    if not all_loaded_links:
+        await ctx.send(
+            "❌ **ERROR:** No links loaded. Use `!reloadlinks` after adding link files."
+        )
+        return
+
+    matching_links = search_links_by_keyword(search_terms)
+
+    if not matching_links:
+        await ctx.send(
+            f"⚠️ No kits found in external links for: `{ ' '.join(search_terms) }`"
+        )
+        return
+
+    display_links = random.sample(
+        matching_links,
+        min(len(matching_links), MAX_SEARCH_RESULTS_DISPLAY)
+    )
+
+    EMBED_LINK_LIMIT = 10 
+    chunks = [
+        display_links[i:i + EMBED_LINK_LIMIT]
+        for i in range(0, len(display_links), EMBED_LINK_LIMIT)
+    ]
+
+    for idx, chunk in enumerate(chunks, start=1):
+        embed = discord.Embed(
+            title="🎧 External Link Kit Search Results",
+            description=(
+                f"**Query:** `{ ' '.join(search_terms) }`\n"
+                f"**Total Matches:** `{len(matching_links)}`\n"
+                f"**Showing:** `{len(display_links)}`"
+            ),
+            color=discord.Color.dark_purple()
+        )
+
+        for i, link in enumerate(chunk, start=1 + (idx - 1) * EMBED_LINK_LIMIT):
+            embed.add_field(
+                name=f"Result #{i}",
+                value=f"[Click to access kit]({link})",
+                inline=False
+            )
+
+        embed.set_footer(
+            text="Use more keywords to narrow results • Results are randomly sampled"
+        )
+
+        await ctx.send(embed=embed)
+
+    if len(matching_links) > MAX_SEARCH_RESULTS_DISPLAY:
+        await ctx.send(
+            f"➕ `{len(matching_links) - MAX_SEARCH_RESULTS_DISPLAY}` more matches found.\n"
+            f"Refine your search or use `!sendlink` to pull a random one."
+        )
+
+    log.info(
+        f"[SEARCHKIT] {ctx.author} searched '{search_query}' "
+        f"({len(matching_links)} matches) in #{ctx.channel.name}"
+    )
+
+
+@bot.command(name="sendlink", help="Searches for a kit by keyword(s) and sends a random match to a named channel.")
+@commands.has_permissions(send_messages=True) 
+async def send_link_by_search_and_channel(ctx, search_query: str, target_discord_channel_name: str):
+    search_terms = search_query.split() 
+    await ctx.send(f"Searching external links for kits matching '{' '.join(search_terms)}' to send to channel '{target_discord_channel_name}'...")
+
+    final_target_channel_obj = resolved_target_channels.get(target_discord_channel_name.lower())
+
+    if not final_target_channel_obj:
+        await ctx.send(f"ERROR: Channel '{target_discord_channel_name}' not found or I lack permissions for it. Please use `!showchannels` to see available resolved channels.")
+        return
+    
+    if not final_target_channel_obj.permissions_for(final_target_channel_obj.guild.me).send_messages:
+        await ctx.send(f"ERROR: I lack permissions to send messages in the specified channel {final_target_channel_obj.mention}.")
+        return
+
+    matching_links = search_links_by_keyword(search_terms)
+
+    if not matching_links:
+        await ctx.send(f"No kits found matching '{' '.join(search_terms)}' in the loaded list. Try different keywords!")
+        return
+
+    # Assuming dispatch_random_match is defined elsewhere or inlined below
+    # Since it's not explicitly in the user's provided code (though mentioned in docstring),
+    # I will add a simple random selection and sending here.
+    random_link = random.choice(matching_links)
+    await final_target_channel_obj.send(f"Here's a random kit matching your query '{' '.join(search_terms)}': {random_link}")
+    await ctx.send(f"Sent a random link to {final_target_channel_obj.mention}!")
+
+
+@bot.command(name="reloadlinks", help="Reloads all links from the configured LINKS_FILES.")
+@commands.has_permissions(administrator=True) 
+async def reload_links_command(ctx):
+    global all_loaded_links
+    all_loaded_links = load_all_links_from_files(LINKS_FILES) 
+    if all_loaded_links:
+        await ctx.send(f"Successfully reloaded {len(all_loaded_links)} links from {len(LINKS_FILES)} files.")
+    else:
+        await ctx.send(f"WARNING: No links loaded after reload from the configured LINKS_FILES.")
+
+@bot.command(name="resolvelinks", help="Re-resolves configured target channel names to objects.")
+@commands.has_permissions(administrator=True)
+async def resolve_channels_cmd(ctx):
+    await ctx.send("Re-resolving configured target channel names to objects now...")
+    await resolve_target_channels()
+    if resolved_target_channels:
+        resolved_mentions = [c.mention for c in resolved_target_channels.values()]
+        await ctx.send(f"Successfully resolved {len(resolved_target_channels)} channels: {', '.join(resolved_mentions)}")
+    else:
+        await ctx.send("No channels could be resolved. Check `TARGET_CHANNEL_NAMES` and bot's permissions.")
+
+@bot.command(name="showchannels", help="Shows configured Discord channel names and their resolved status.")
+@commands.has_permissions(manage_channels=True)
+async def show_configured_channels(ctx):
+    if not TARGET_CHANNEL_NAMES:
+        await ctx.send("No target channel names are currently configured in `TARGET_CHANNEL_NAMES` list.")
+        return
+
+    response_lines = ["**Configured Target Discord Channels:**"]
+    if not resolved_target_channels:
+        response_lines.append("  (No channels currently resolved - use `!resolvelinks` or check bot's permissions and guild presence.)")
+    
+    for name in sorted(TARGET_CHANNEL_NAMES): 
+        channel_obj = resolved_target_channels.get(name.lower())
+        if channel_obj:
+            response_lines.append(f"  - `{name}` (Resolved to: {channel_obj.mention} - ID: `{channel_obj.id}`)")
+        else:
+            response_lines.append(f"  - `{name}` (Not yet resolved or bot lacks access)")
+    
+    await ctx.send("\n".join(response_lines))
+
+
+@bot.command(name="status", help="Displays the bot's current operational status.")
+async def bot_status(ctx):
+    status_msg = f"Intelligent Retriever Bot is online!\n" \
+                 f"Loaded external links: {len(all_loaded_links)}\n" \
+                 f"Resolved target channels: {len(resolved_target_channels)}\n" \
+                 f"Prefix: `{PREFIX}`"
+    await ctx.send(status_msg)
+
+
+# --- VAULT WHISPERER Prefix Commands (Renamed for clarity and all unified under bot.command) ---
+# Now, all these commands are also prefix commands like your original ones!
+
+@bot.command(name="vault_search", help="Searches the 420Vault for audio assets by keywords (e.g., '#vault_search drum loop').")
+@commands.has_permissions(send_messages=True)
+async def vault_search_command(ctx, *, query_and_pagination: str):
+    # Expects "query [limit:X] [page:Y]"
+    parts = query_and_pagination.split(' ')
+    query_terms = []
+    limit = 5
+    page = 1
+    
+    for part in parts:
+        if part.lower().startswith("limit:"):
+            try:
+                limit = int(part[len("limit:"):])
+            except ValueError:
+                await ctx.send("Invalid limit. Must be a number.")
+                return
+        elif part.lower().startswith("page:"):
+            try:
+                page = int(part[len("page:"):])
+            except ValueError:
+                await ctx.send("Invalid page. Must be a number.")
+                return
+        else:
+            query_terms.append(part)
+            
+    query = " ".join(query_terms)
+
+    if not query:
+        await ctx.send("Please provide keywords to search the vault. Usage: `!vault_search query [limit:X] [page:Y]`")
+        return
+
+    await ctx.send(f"🔎 **Searching 420Vault for:** `{query}`, Limit: {limit}, Page: {page}...")
+    
+    all_results = db_manager.search_files(query, limit=100) # Fetch more to paginate locally
+    paginated_results, total_pages = paginate_list(all_results, page, limit)
+
+    if not paginated_results:
+        await ctx.send(f"No results found for '{query}' on page {page} in 420Vault. The vault remains silent.")
+        return
+
+    embed = discord.Embed(
+        title=f"🎧 420Vault Search Results for '{query}' (Page {page}/{total_pages})",
+        description=f"Found {len(all_results)} total matches. Use `{PREFIX}download_vault <ID>` for a file:",
+        color=discord.Color(0x420690) 
+    )
+    embed.set_thumbnail(url="https://i.imgur.com/your_vault_icon.png") 
+    
+    for i, file_data in enumerate(paginated_results):
+        filename = file_data['filename']
+        relative_folder = os.path.relpath(file_data['folder'], VAULT_PATH)
+        display_folder = relative_folder if relative_folder != "." else "/"
+        size = format_bytes(file_data['file_size']) 
+        extension = file_data['extension'].upper().lstrip('.')
+
+        download_status = ""
+        if file_data['file_size'] > MAX_DISCORD_FILE_SIZE:
+            download_status = "❌ Too large for Discord"
+        else:
+            download_status = f"✅ Downloadable (ID: {file_data['id']})"
+            
+        embed.add_field(
+            name=f"**{i+1}. {filename}**",
+            value=(
+                f"**Path:** `{display_folder}`\n"
+                f"**Size:** {size} | **Type:** {extension}\n"
+                f"{download_status}"
+            ),
+            inline=False
+        )
+    
+    embed.set_footer(text=f"Information wants to be free, and so do YOU. | Next: `{PREFIX}vault_search \"{query}\" page:{page+1}`")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="vault_search_type", help="Searches 420Vault for files by extension (e.g., '#vault_search_type wav').")
+@commands.has_permissions(send_messages=True)
+async def vault_search_type_command(ctx, extension: str, limit: int = 5, page: int = 1):
+    await ctx.send(f"🔎 **Searching 420Vault for files with extension:** `.{extension}`, Limit: {limit}, Page: {page}...")
+
+    all_results = db_manager.search_by_extension(extension, limit=100)
+    paginated_results, total_pages = paginate_list(all_results, page, limit)
+
+    if not paginated_results:
+        await ctx.send(f"No files found with extension '.{extension}' on page {page} in 420Vault.")
+        return
+
+    embed = discord.Embed(
+        title=f"🎧 420Vault Files with extension '.{extension}' (Page {page}/{total_pages})",
+        description=f"Found {len(all_results)} total matches. Use `{PREFIX}download_vault <ID>`:",
+        color=discord.Color(0x00FF7F) 
+    )
+    
+    for i, file_data in enumerate(paginated_results):
+        filename = file_data['filename']
+        relative_folder = os.path.relpath(file_data['folder'], VAULT_PATH)
+        display_folder = relative_folder if relative_folder != "." else "/"
+        size = format_bytes(file_data['file_size']) 
+
+        download_status = "❌ Too large for Discord" if file_data['file_size'] > MAX_DISCORD_FILE_SIZE else f"✅ Downloadable (ID: {file_data['id']})"
+            
+        embed.add_field(
+            name=f"**{i+1}. {filename}**",
+            value=(
+                f"**Path:** `{display_folder}`\n"
+                f"**Size:** {size}\n"
+                f"{download_status}"
+            ),
+            inline=False
+        )
+    embed.set_footer(text=f"Filtered by type. Precision is power. | Next: `{PREFIX}vault_search_type \"{extension}\" page:{page+1}`")
+    await ctx.send(embed=embed)
+
+@bot.command(name="vault_search_size", help="Searches 420Vault for files by size (e.g., '#vault_search_size > 100MB').")
+@commands.has_permissions(send_messages=True)
+async def vault_search_size_command(ctx, operator: str, value: str, limit: int = 5, page: int = 1):
+    await ctx.send(f"🔎 **Searching 420Vault for files {operator} {value}**, Limit: {limit}, Page: {page}...")
+
+    value_bytes = parse_size_string(value)
+    if value_bytes is None:
+        await ctx.send("Invalid size format. Use formats like '100MB', '2.5GB', '500KB'.")
+        return
+
+    all_results = db_manager.search_by_size(operator, value_bytes, limit=100)
+    paginated_results, total_pages = paginate_list(all_results, page, limit)
+
+    if not paginated_results:
+        await ctx.send(f"No files found {operator} {value} on page {page} in 420Vault.")
+        return
+
+    embed = discord.Embed(
+        title=f"🎧 420Vault Files {operator} {value} (Page {page}/{total_pages})",
+        description=f"Found {len(all_results)} total matches. Use `{PREFIX}download_vault <ID>`:",
+        color=discord.Color(0x8A2BE2) 
+    )
+    
+    for i, file_data in enumerate(paginated_results):
+        filename = file_data['filename']
+        relative_folder = os.path.relpath(file_data['folder'], VAULT_PATH)
+        display_folder = relative_folder if relative_folder != "." else "/"
+        size = format_bytes(file_data['file_size']) 
+        extension = file_data['extension'].upper().lstrip('.')
+
+        download_status = "❌ Too large for Discord" if file_data['file_size'] > MAX_DISCORD_FILE_SIZE else f"✅ Downloadable (ID: {file_data['id']})"
+            
+        embed.add_field(
+            name=f"**{i+1}. {filename}**",
+            value=(
+                f"**Path:** `{display_folder}`\n"
+                f"**Size:** {size} | **Type:** {extension}\n"
+                f"{download_status}"
+            ),
+            inline=False
+        )
+    embed.set_footer(text=f"Size matters for your downloads. Filtered for your convenience. | Next: `{PREFIX}vault_search_size \"{operator}\" \"{value}\" page:{page+1}`")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="vault_search_terms", help="Searches 420Vault for music production terminology (e.g., '#vault_search_terms kicks snares').")
+@commands.has_permissions(send_messages=True)
+async def vault_search_terms_command(ctx, *, search_terms_str: str):
+    # Expects "term1 term2 ... [limit:X] [page:Y]"
+    parts = search_terms_str.split(' ')
+    terms_list = []
+    limit = 5
+    page = 1
+
+    for part in parts:
+        if part.lower().startswith("limit:"):
+            try:
+                limit = int(part[len("limit:"):])
+            except ValueError:
+                await ctx.send("Invalid limit. Must be a number.")
+                return
+        elif part.lower().startswith("page:"):
+            try:
+                page = int(part[len("page:"):])
+            except ValueError:
+                await ctx.send("Invalid page. Must be a number.")
+                return
+        else:
+            terms_list.append(part)
+            
+    if not terms_list:
+        await ctx.send(f"Please provide music production terms to search. Usage: `{PREFIX}vault_search_terms kicks 808 loops [limit:X] [page:Y]`")
+        return
+
+    await ctx.send(f"🔎 **Searching 420Vault for music terms:** `{', '.join(terms_list)}`, Limit: {limit}, Page: {page}...")
+    
+    all_results = db_manager.search_by_music_terminology(terms_list, limit=100) # Fetch more to paginate locally
+    paginated_results, total_pages = paginate_list(all_results, page, limit)
+
+    if not paginated_results:
+        await ctx.send(f"No files found matching music terms '{', '.join(terms_list)}' on page {page} in 420Vault. The vault remains silent.")
+        return
+
+    embed = discord.Embed(
+        title=f"🎧 420Vault Music Terminology Search Results (Page {page}/{total_pages})",
+        description=f"Found {len(all_results)} total matches for: `{', '.join(terms_list)}`. Use `{PREFIX}download_vault <ID>` for a file:",
+        color=discord.Color.dark_magenta() 
+    )
+    embed.set_thumbnail(url="https://i.imgur.com/your_vault_icon.png") 
+    
+    for i, file_data in enumerate(paginated_results):
+        filename = file_data['filename']
+        relative_folder = os.path.relpath(file_data['folder'], VAULT_PATH)
+        display_folder = relative_folder if relative_folder != "." else "/"
+        size = format_bytes(file_data['file_size']) 
+        extension = file_data['extension'].upper().lstrip('.')
+
+        download_status = "❌ Too large for Discord" if file_data['file_size'] > MAX_DISCORD_FILE_SIZE else f"✅ Downloadable (ID: {file_data['id']})"
+            
+        embed.add_field(
+            name=f"**{i+1}. {filename}**",
+            value=(
+                f"**Path:** `{display_folder}`\n"
+                f"**Size:** {size} | **Type:** {extension}\n"
+                f"{download_status}"
+            ),
+            inline=False
+        )
+    
+    embed.set_footer(text=f"Unleashing the sounds of your terminology. | Next: `{PREFIX}vault_search_terms \"{search_terms_str}\" page:{page+1}`")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="vault_random", help="Pull a random audio file from the 420Vault.") 
+@commands.has_permissions(send_messages=True)
+async def vault_random_command(ctx):
+    await ctx.send("🎲 **Pulling a random artifact from the 420Vault...**")
+    
+    file_data = db_manager.get_random_file()
+    
+    if not file_data:
+        await ctx.send("The 420Vault is empty, or cannot yield a random artifact.")
+        return
+
+    filename = file_data['filename']
+    relative_folder = os.path.relpath(file_data['folder'], VAULT_PATH)
+    display_folder = relative_folder if relative_folder != "." else "/"
+    size = format_bytes(file_data['file_size']) 
+    extension = file_data['extension'].upper().lstrip('.')
+
+    download_status = "❌ Too large for Discord" if file_data['file_size'] > MAX_DISCORD_FILE_SIZE else f"✅ Downloadable (ID: {file_data['id']})"
+
+    embed = discord.Embed(
+        title=f"🎶 Random 420Vault Artifact: {filename}",
+        description="A spontaneous revelation from the 420Vault:",
+        color=discord.Color(0x694206)
+    )
+    embed.add_field(
+        name=f"**{filename} (ID: {file_data['id']})**",
+        value=(
+            f"**Path:** `{display_folder}`\n"
+            f"**Size:** {size}\n"
+            f"**Type:** {extension}\n"
+            f"{download_status}"
+        ),
+        inline=False
+    )
+    embed.set_footer(text="Unpredictability is the spice of existence.")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="vault_stats", help="Show 420Vault indexing statistics.") 
+@commands.has_permissions(send_messages=True)
+async def vault_stats_command(ctx):
+    await ctx.send("📊 **Retrieving 420Vault indexing statistics...**")
+    
+    stats = db_manager.get_stats()
+
+    if not stats["total_indexed_files"]:
+        await ctx.send("The 420Vault statistics are currently unavailable or empty. Run the indexer!")
+        return
+
+    total_size_formatted = format_bytes(stats["total_storage_size_bytes"]) 
+    last_scan_time_formatted = stats["last_scan_time"] if stats["last_scan_time"] else "Never"
+
+    embed = discord.Embed(
+        title="📈 420Vault Indexing Statistics",
+        description="Current state of your sonic Pleroma:",
+        color=discord.Color(0x904269)
+    )
+    embed.add_field(name="Total Indexed Files", value=f"`{stats['total_indexed_files']}`", inline=True)
+    embed.add_field(name="Total Storage Size", value=f"`{total_size_formatted}`", inline=True)
+    embed.add_field(name="Last Index Event", value=f"`{last_scan_time_formatted}`", inline=False)
+    embed.set_footer(text=f"Discord File Limit: {format_bytes(MAX_DISCORD_FILE_SIZE)}") 
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="vault_list", help="List files and subfolders in a specified 420Vault path (e.g., '#vault_list Drums/Kits').") 
+@commands.has_permissions(send_messages=True)
+async def vault_list_command(ctx, path: str = "", page: int = 1):
+    await ctx.send(f"📂 **Listing contents of 420Vault path:** `{path if path else '/'}` (Page {page})...")
+
+    current_path = os.path.join(VAULT_PATH, path)
+    normalized_current_path = os.path.abspath(current_path)
+
+    if not normalized_current_path.startswith(os.path.abspath(VAULT_PATH)):
+        await ctx.send("Attempted path traversal detected. Stay within the vault, seeker!")
+        log.warning(f"Path traversal attempt by {ctx.author.name}: {path}")
+        return
+
+    if not os.path.isdir(normalized_current_path) and normalized_current_path != os.path.abspath(VAULT_PATH): # Allow empty path for root
+        await ctx.send(f"The path `{path}` is not a directory or does not exist in the 420Vault. Try `{PREFIX}vault_list` or `{PREFIX}vault_list \"SomeFolder\"`.")
+        return
+
+    embed = discord.Embed(
+        title=f"📁 Contents of `{path if path else '/'}` (Page {page})",
+        description="Exploring the depths of your 420Vault:",
+        color=discord.Color(0x207C5F)
+    )
+    
+    page_size = 10 
+    
+    total_subfolders = db_manager.count_unique_subfolders(normalized_current_path)
+    unique_subfolders_list_all = db_manager.get_unique_folders_paginated(normalized_current_path, 1, 100) 
+    subfolders_paginated, total_folder_pages = paginate_list(unique_subfolders_list_all, page, page_size)
+
+    if subfolders_paginated:
+        folder_list_str = "\n".join([f"📁 `{os.path.relpath(f, VAULT_PATH) if os.path.relpath(f, VAULT_PATH) != '.' else '/'}`" for f in subfolders_paginated])
+        embed.add_field(name=f"Subfolders ({total_subfolders} total)", value=folder_list_str, inline=False)
+    else:
+        embed.add_field(name="Subfolders", value="No immediate subfolders found.", inline=False)
+
+    total_files_in_folder = db_manager.count_files_in_folder(normalized_current_path)
+    # The current get_folder_contents_paginated is for files within the exact folder,
+    # if normalized_current_path is not VAULT_PATH itself, it should be like "%parent/sub/%"
+    # The db_manager.get_folder_contents_paginated takes care of the LIKE % operator
+    files_in_folder_all = db_manager.get_folder_contents_paginated(normalized_current_path, 1, total_files_in_folder) # Get all files to paginate
+    files_paginated, total_files_pages = paginate_list(files_in_folder_all, page, page_size)
+    
+    if files_paginated:
+        file_list_str = []
+        for file_data in files_paginated:
+            size = format_bytes(file_data['file_size']) 
+            ext = file_data['extension'].lstrip('.')
+            download_status = "❌" if file_data['file_size'] > MAX_DISCORD_FILE_SIZE else "✅"
+            file_list_str.append(f"{download_status} `{file_data['filename']}` ({size}, .{ext}) - ID: `{file_data['id']}`")
+        embed.add_field(name=f"Files ({total_files_in_folder} total)", value="\n".join(file_list_str), inline=False)
+    else:
+        embed.add_field(name="Files", value="No files found in this directory.", inline=False)
+
+    embed.set_footer(text=f"Page {page} | Use `{PREFIX}vault_list \"{path}\" page:{page+1}` or `{PREFIX}download_vault <ID>`.")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="download_vault", help="Downloads a file from the 420Vault by its ID (e.g., '#download_vault 12345').")
+@commands.has_permissions(attach_files=True) 
+async def download_vault_command(ctx, file_id: int):
+    await ctx.send(f"📥 **Attempting to retrieve file ID:** `{file_id}` from 420Vault...")
+
+    file_data = db_manager.get_file_by_id(file_id)
+
+    if not file_data:
+        await ctx.send(f"File with ID `{file_id}` not found in the 420Vault index.")
+        return
+
+    full_path = file_data['full_path']
+    filename = file_data['filename']
+    file_size = file_data['file_size']
+
+    if file_size > MAX_DISCORD_FILE_SIZE:
+        size_formatted = format_bytes(file_size) 
+        max_size_formatted = format_bytes(MAX_DISCORD_FILE_SIZE) 
+        embed = discord.Embed(
+            title=f"🛑 File Too Large for Discord: {filename}",
+            description=(
+                f"The file `{filename}` is **{size_formatted}**, which exceeds "
+                f"Discord's direct upload limit of **{max_size_formatted}**.\n\n"
+                "I cannot blast through this fence for you, seeker. Consider other means of transfer."
+            ),
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        log.warning(f"User '{ctx.author.name}' attempted to download file ID {file_id} ({filename}) "
+                                    f"of size {size_formatted}, exceeding Discord limit.")
+        return
+    
+    try:
+        if not os.path.exists(full_path):
+            log.error(f"Indexed file '{full_path}' (ID: {file_id}) not found on disk during download attempt.")
+            await ctx.send(f"Error: The file `{filename}` (ID: {file_id}) was found in the index but not on disk. "
+                                            "A re-index might be needed.")
+            return
+
+        await ctx.send(
+            f"Here is your file, liberated from the 420Vault: `{filename}`", 
+            file=discord.File(full_path, filename=filename)
+        )
+        log.info(f"Successfully uploaded file ID {file_id} ({filename}) to Discord for user '{ctx.author.name}'.")
+
+    except discord.HTTPException as e:
+        log.error(f"Discord HTTP error during file upload for ID {file_id} ({filename}): {e}", exc_info=True)
+        await ctx.send(f"An error occurred while uploading `{filename}` to Discord: `{e}`. "
+                                        "This could be due to rate limits or other Discord API issues.")
+    except Exception as e:
+        log.error(f"Unexpected error during file upload for ID {file_id} ({filename}): {e}", exc_info=True)
+        await ctx.send(f"An unexpected error occurred during file upload: `{e}`.")
+
+
+@bot.command(name="reindex_vault", help="[ADMIN] Triggers a full re-index of the 420Vault.")
+@commands.has_permissions(administrator=True)
+async def reindex_vault_command(ctx):
+    await ctx.send("⚙️ **Initiating a full re-index of the 420Vault.** This may take some time for very large vaults.")
+    log.warning(f"User '{ctx.author.name}' (ADMIN) initiated a re-index.")
+    
+    try:
+        await run_indexer_script_async() 
+        await ctx.send("Re-indexing process started in the background. Check bot logs for progress.")
+    except Exception as e:
+        log.error(f"Failed to start re-indexing script: {e}", exc_info=True)
+        await ctx.send(f"Failed to start re-indexing process: `{e}`. Check bot logs.")
+
+@bot.command(name="admin_delete_vault_index", help="[ADMIN] Deletes the entire 420Vault index database. USE WITH CAUTION!")
+@commands.has_permissions(administrator=True)
+async def admin_delete_vault_index_command(ctx):
+    log.critical(f"User '{ctx.author.name}' (ADMIN) invoked DANGEROUS COMMAND: admin_delete_vault_index!")
+    
+    confirm_message = await ctx.send(
+        "**DANGER!** This will **PERMANENTLY DELETE** the entire 420Vault index database (`vault_files.db`). "
+        "Type `CONFIRM DELETE INDEX` within 15 seconds to proceed. This is irreversible!"
+    )
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content == "CONFIRM DELETE INDEX"
+
+    try:
+        await bot.wait_for('message', check=check, timeout=15.0) 
+    except asyncio.TimeoutError:
+        await ctx.send("Index deletion cancelled. Hesitation breeds preservation.")
+        return
+
+    try:
+        if os.path.exists(DATABASE_PATH):
+            os.remove(DATABASE_PATH)
+            log.critical(f"420Vault index database '{DATABASE_PATH}' has been DELETED by admin '{ctx.author.name}'.")
+            await ctx.send("420Vault index database successfully deleted! Run `!reindex_vault` to rebuild.")
+            db_manager.__init__(DATABASE_PATH) # Re-initialize DB manager after deletion
+        else:
+            await ctx.send("420Vault index database not found, nothing to delete.")
+    except Exception as e:
+        log.error(f"Error deleting 420Vault index database: {e}", exc_info=True)
+        await ctx.send(f"An error occurred while deleting the 420Vault index: `{e}`.")
+
+# ==============================
+# 🚨 LOCKDOWN
+# ==============================
+@bot.command(name="lockdown")
+@commands.has_permissions(administrator=True)
+async def lockdown(ctx):
+    global LOCKDOWN_MODE
+    LOCKDOWN_MODE = True
+    await ctx.send("🚨 **LOCKDOWN ENABLED** — public commands disabled.")
+
+@bot.command(name="unlock")
+@commands.has_permissions(administrator=True)
+async def unlock(ctx):
+    global LOCKDOWN_MODE
+    LOCKDOWN_MODE = False
+    await ctx.send("✅ Lockdown disabled.")
+
+# ==============================
+# 📊 STATUS / VERSION
+# ==============================
+@bot.command(name="Bot_status")
+async def status(ctx):
+    await ctx.send("🟢 420VaultBot operational.")
+
+@bot.command(name="version")
+async def version(ctx):
+    await ctx.send("420VaultBot v1.0 (patched with advanced license system)")
+
+@bot.command(name="exportserver")
+@commands.has_permissions(administrator=True)
+async def export_server(ctx):
+    guild = ctx.guild
+
+    lines = []
+    lines.append(f"SERVER EXPORT")
+    lines.append(f"Name: {guild.name}")
+    lines.append(f"ID: {guild.id}")
+    lines.append(f"Owner: {guild.owner} ({guild.owner_id})")
+    lines.append(f"Created: {guild.created_at}")
+    lines.append(f"Members: {guild.member_count}")
+    lines.append("")
+
+    # =========================
+    # ROLES
+    # =========================
+    lines.append("ROLES:")
+    for role in sorted(guild.roles, key=lambda r: r.position, reverse=True):
+        lines.append(f"- {role.name} (ID: {role.id})")
+    lines.append("")
+
+    # =========================
+    # CHANNELS
+    # =========================
+    lines.append("CHANNELS:")
+
+    for category in guild.categories:
+        lines.append(f"\n[Category] {category.name} (ID: {category.id})")
+
+        for channel in category.channels:
+            if isinstance(channel, discord.TextChannel):
+                lines.append(f"  # {channel.name} (Text | ID: {channel.id})")
+            elif isinstance(channel, discord.VoiceChannel):
+                lines.append(f"  🔊 {channel.name} (Voice | ID: {channel.id})")
+            else:
+                lines.append(f"  ? {channel.name} ({type(channel).__name__} | ID: {channel.id})")
+
+    # =========================
+    # UNCATEGORIZED CHANNELS
+    # =========================
+    if guild.channels:
+        lines.append("\nUNCATEGORIZED CHANNELS:")
+        for channel in guild.channels:
+            if channel.category is None:
+                if isinstance(channel, discord.TextChannel):
+                    lines.append(f"# {channel.name} (Text | ID: {channel.id})")
+                elif isinstance(channel, discord.VoiceChannel):
+                    lines.append(f"🔊 {channel.name} (Voice | ID: {channel.id})")
+
+    # =========================
+    # WRITE FILE
+    # =========================
+    filename = f"{guild.name.replace(' ', '_')}_server_export.txt"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    await ctx.send(
+        content="📦 **Server export complete**",
+        file=discord.File(filename)
+    )
+
+# --- NEW: Admin License Management Commands ---
+@bot.command(name="addlicense", help="[ADMIN] Generates and adds a new license code. Usage: `!addlicense [user_mention_or_id] [days_valid] [max_activations]`")
+@commands.has_permissions(administrator=True)
+async def add_license_command(ctx, user_id: Optional[str] = None, days_valid: Optional[int] = None, max_activations: Optional[int] = None):
+    # If user_id is provided, try to find the actual user to get the ID string
+    target_user_id_str = None
+    if user_id:
+        try:
+            member = await commands.MemberConverter().convert(ctx, user_id)
+            target_user_id_str = str(member.id)
+        except commands.MemberNotFound:
+            # Check if it's a raw numeric ID string
+            if user_id.isdigit():
+                target_user_id_str = user_id
+            else:
+                await ctx.send(f"❌ User '{user_id}' not found. Please provide a valid user mention, ID, or leave blank for an unbound license.")
+                return
+
+    new_code = generate_license_code(target_user_id_str, days_valid, max_activations)
+    
+    expires_at = None
+    if days_valid:
+        expiry_date = datetime.datetime.now() + datetime.timedelta(days=days_valid)
+        expires_at = expiry_date.isoformat()
+
+    licenses[new_code] = {
+        "status": "active",
+        "discord_id": target_user_id_str, # Will be null if no user_id provided, bound on first use
+        "generated_by": str(ctx.author.id),
+        "generated_at": datetime.datetime.now().isoformat(),
+        "expires_at": expires_at,
+        "max_activations": max_activations,
+        "activations_used": 0 # Only increments if discord_id is null and it gets bound
+    }
+    save_json(LICENSE_FILE, licenses)
+
+    license_info = [
+        f"**Code:** `{new_code}`",
+        f"**Status:** `active`"
+    ]
+    if target_user_id_str:
+        license_info.append(f"**Bound to:** <@{target_user_id_str}> (`{target_user_id_str}`)")
+    else:
+        license_info.append(f"**Bound to:** `Unbound (first activation binds)`")
+    
+    if expires_at:
+        license_info.append(f"**Expires:** `{expires_at}` (after {days_valid} days)")
+    else:
+        license_info.append(f"**Expires:** `Never` (perpetual)")
+    
+    if max_activations is not None:
+        license_info.append(f"**Max Activations:** `{max_activations}`")
+    else:
+        license_info.append(f"**Max Activations:** `Unlimited`")
+
+    embed = discord.Embed(
+        title="✨ New License Generated!",
+        description="\n".join(license_info),
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
+    log.info(f"Admin {ctx.author} generated new license {new_code}.")
+
+@bot.command(name="revokelicense", help="[ADMIN] Revokes an existing license code. Usage: `!revokelicense <license_code>`")
+@commands.has_permissions(administrator=True)
+async def revoke_license_command(ctx, code: str):
+    code = code.strip().upper()
+    if code not in licenses:
+        await ctx.send(f"❌ License code `{code}` not found.")
+        return
+    
+    lic = licenses[code]
+    lic["status"] = "revoked"
+    lic["revoked_by"] = str(ctx.author.id)
+    lic["revoked_at"] = datetime.datetime.now().isoformat()
+    save_json(LICENSE_FILE, licenses)
+
+    await ctx.send(f"✅ License `{code}` revoked. Initiating immediate recheck of unlocked users.")
+    log.info(f"Admin {ctx.author} revoked license {code}. Forcing immediate license monitor recheck.")
+    # Force an immediate recheck of licenses to ensure affected users are locked promptly
+    license_monitor_task.restart() # Use restart() to run immediately and then resume schedule
+
+
+@bot.command(name="showlicense", help="[ADMIN] Displays details of a specific license code. Usage: `!showlicense <license_code>`")
+@commands.has_permissions(administrator=True)
+async def show_license_command(ctx, code: str):
+    code = code.strip().upper()
+    if code not in licenses:
+        await ctx.send(f"❌ License code `{code}` not found.")
+        return
+    
+    lic = licenses[code]
+
+    license_info = [
+        f"**Code:** `{code}`",
+        f"**Status:** `{lic.get('status', 'unknown')}`"
+    ]
+    
+    bound_id = lic.get("discord_id")
+    if bound_id:
+        license_info.append(f"**Bound to:** <@{bound_id}> (`{bound_id}`)")
+    else:
+        license_info.append(f"**Bound to:** `Unbound`")
+
+    expires_at = lic.get("expires_at")
+    if expires_at:
+        license_info.append(f"**Expires:** `{expires_at}`")
+    else:
+        license_info.append(f"**Expires:** `Never`")
+
+    max_activations = lic.get("max_activations")
+    if max_activations is not None:
+        license_info.append(f"**Activations:** `{lic.get('activations_used', 0)} / {max_activations}`")
+    else:
+        license_info.append(f"**Activations:** `{lic.get('activations_used', 0)} / Unlimited`")
+
+    license_info.append(f"**Generated By:** <@{lic.get('generated_by', 'Unknown')}>")
+    license_info.append(f"**Generated At:** `{lic.get('generated_at', 'Unknown')}`")
+    
+    last_activated = lic.get('last_activated_at')
+    if last_activated:
+        license_info.append(f"**Last Activated:** `{last_activated}`")
+
+    embed = discord.Embed(
+        title=f"📜 License Details for `{code}`",
+        description="\n".join(license_info),
+        color=discord.Color.blue()
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="listlicenses", help="[ADMIN] Lists all licenses or filters by status. Usage: `!listlicenses [status (active|inactive|expired|revoked)]`")
+@commands.has_permissions(administrator=True)
+async def list_licenses_command(ctx, status_filter: Optional[str] = None):
+    filtered_licenses = {}
+    if status_filter:
+        status_filter = status_filter.lower()
+        if status_filter not in ["active", "inactive", "expired", "revoked"]:
+            await ctx.send("❌ Invalid status filter. Use 'active', 'inactive', 'expired', or 'revoked'.")
+            return
+        
+        for code, lic_data in licenses.items():
+            if lic_data.get("status") == status_filter:
+                filtered_licenses[code] = lic_data
+    else:
+        filtered_licenses = licenses
+    
+    if not filtered_licenses:
+        await ctx.send(f"No licenses found {'with status ' + status_filter if status_filter else ''}.")
+        return
+
+    embed = discord.Embed(
+        title=f"📋 All Licenses ({len(filtered_licenses)} found){' (Status: ' + status_filter.capitalize() + ')' if status_filter else ''}",
+        color=discord.Color.light_grey()
+    )
+    
+    description_lines = []
+    for code, lic_data in filtered_licenses.items():
+        bound_id = lic_data.get('discord_id', 'Unbound')
+        expires_at = lic_data.get('expires_at', 'Never')
+        status = lic_data.get('status', 'unknown')
+        activations = lic_data.get('activations_used', 0)
+        max_acts = lic_data.get('max_activations', '∞')
+        
+        description_lines.append(f"`{code}` | **Status:** `{status}` | **Bound:** <@{bound_id}> | **Activations:** `{activations}/{max_acts}` | **Expires:** `{expires_at.split('T')[0] if expires_at else 'Never'}`")
+
+    # Split into chunks if too many lines for one embed description
+    chunk_size = 10
+    chunks = [description_lines[i:i + chunk_size] for i in range(0, len(description_lines), chunk_size)]
+
+    if not chunks: # Handle case where description_lines might be empty despite filtered_licenses being non-empty
+        embed.description = "No licenses found matching criteria."
+        await ctx.send(embed=embed)
+        return
+
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            embed.description = "\n".join(chunk)
+            await ctx.send(embed=embed)
+        else:
+            # Send subsequent chunks as follow-up messages
+            follow_up_embed = discord.Embed(
+                title=f"📋 All Licenses (Cont.){' (Status: ' + status_filter.capitalize() + ')' if status_filter else ''}",
+                description="\n".join(chunk),
+                color=discord.Color.light_grey()
+            )
+            await ctx.send(embed=follow_up_embed)
+    
+    log.info(f"Admin {ctx.author} listed licenses with filter '{status_filter or 'none'}'")
+
+@bot.command(name="resetuserlicenses", help="[ADMIN] Resets a user's license access by removing them from the unlocked cache. Usage: `!resetuserlicenses <user_mention_or_id>`")
+@commands.has_permissions(administrator=True)
+async def reset_user_licenses_command(ctx, user_id: str):
+    target_user_id_str = None
+    try:
+        member = await commands.MemberConverter().convert(ctx, user_id)
+        target_user_id_str = str(member.id)
+    except commands.MemberNotFound:
+        if user_id.isdigit():
+            target_user_id_str = user_id
+        else:
+            await ctx.send(f"❌ User '{user_id}' not found. Please provide a valid user mention or ID.")
+            return
+
+    if target_user_id_str in unlocked_users:
+        del unlocked_users[target_user_id_str]
+        save_json(UNLOCKED_FILE, unlocked_users)
+        await ctx.send(f"✅ User <@{target_user_id_str}> (`{target_user_id_str}`) removed from unlocked cache. They will need to re-enter a valid license.")
+        log.info(f"Admin {ctx.author} reset license access for user {target_user_id_str}.")
+    else:
+        await ctx.send(f"⚠️ User <@{target_user_id_str}> (`{target_user_id_str}`) was not found in the unlocked cache.")
+
+# --- Background Task for License Monitoring ---
+@tasks.loop(seconds=LICENSE_CHECK_INTERVAL_SECONDS)
+async def license_monitor_task():
+    # --- FIX START --- Moved global declaration to the very beginning of the function
+    global unlocked_users 
+    # --- FIX END ---
+    """
+    Periodically checks license expiration and status, updating `licenses.json` and `unlocked_users.json`.
+    """
+    if not bot.is_ready(): # Ensure bot is fully ready before running task
+        log.info("License monitor waiting for bot to be ready...")
+        return
+
+    log.info("Running periodic license monitor task...")
+    
+    any_changes_to_licenses = False
+    
+    # Pass 1: Update license statuses (expired, etc.) within licenses.json
+    for code, lic in list(licenses.items()): # Iterate on a copy to allow modification
+        original_status = lic.get("status")
+        
+        # Check expiration only if not already revoked or inactive
+        expires_at_str = lic.get("expires_at")
+        if expires_at_str and original_status not in ["revoked", "inactive"]:
+            try:
+                expires_at = datetime.datetime.fromisoformat(expires_at_str)
+                if datetime.datetime.now() > expires_at and original_status != "expired":
+                    lic["status"] = "expired"
+                    log.info(f"License '{code}' expired.")
+                    any_changes_to_licenses = True
+            except ValueError:
+                log.error(f"Invalid 'expires_at' format for license '{code}': {expires_at_str}. Please fix manually.")
+        
+    # Save any changes made to licenses.json from Pass 1
+    if any_changes_to_licenses:
+        save_json(LICENSE_FILE, licenses)
+        log.info("licenses.json updated with new expired statuses.")
+
+    # Pass 2: Rebuild unlocked_users based on the *current* state of `licenses.json`
+    # This ensures `unlocked_users` is always consistent with valid, active licenses.
+    rebuilt_unlocked_users = {}
+    for code, lic in licenses.items():
+        if lic.get("status") == "active": # Only consider active licenses
+            bound_id = lic.get("discord_id")
+            if bound_id:
+                # Double-check expiration to be absolutely sure (redundant if Pass 1 is perfect, but safe)
+                expires_at_str = lic.get("expires_at")
+                is_expired = False
+                if expires_at_str:
+                    try:
+                        expires_at = datetime.datetime.fromisoformat(expires_at_str)
+                        if datetime.datetime.now() > expires_at:
+                            is_expired = True
+                    except ValueError:
+                        pass # Error already logged in Pass 1
+                
+                if not is_expired: # If not expired, and active, add to unlocked
+                    rebuilt_unlocked_users[bound_id] = True
+    
+    # Compare rebuilt cache with current in-memory cache
+    if rebuilt_unlocked_users != unlocked_users: 
+        # The 'global unlocked_users' declaration is now at the top,
+        # so this assignment refers to the global variable correctly.
+        unlocked_users = rebuilt_unlocked_users
+        save_json(UNLOCKED_FILE, unlocked_users)
+        log.info("Unlocked users cache updated to reflect current active licenses.")
+    else:
+        log.info("Unlocked users cache is already up-to-date.")
+
+    log.info("License monitor task completed.")
+
+
+# --- Bot Execution ---
+
+def run_bot():
+    # Corrected BOT_TOKEN check - it should match the literal string defined in the config
+    if BOT_TOKEN == BOT_TOKEN is None: 
+        log.critical("ERROR: BOT_TOKEN is not set. Please update the 'CONFIGURATION SECTION' with your bot's token.")
+        print("ERROR: BOT_TOKEN is not set. Please update the 'CONFIGURATION SECTION' with your bot's token.")
+        print("Your bot cannot awaken without its divine key!")
+        return
+    try:
+        log.info("Attempting to run bot with provided BOT_TOKEN.")
+        bot.run(BOT_TOKEN)
+    except discord.LoginFailure:
+        log.critical("ERROR: Invalid BOT_TOKEN provided. Ensure your BOT_TOKEN is correct and valid in the CONFIGURATION SECTION.")
+        print("ERROR: Invalid BOT_TOKEN provided. Ensure your BOT_TOKEN is correct and valid in the CONFIGURATION SECTION.")
+    except Exception as e:
+        log.critical(f"ERROR: Bot encountered an unexpected error during Discord connection: {e}", exc_info=True)
+        print(f"ERROR: Bot encountered an unexpected error during Discord connection: {e}")
+
+if __name__ == "__main__":
+    run_bot()
