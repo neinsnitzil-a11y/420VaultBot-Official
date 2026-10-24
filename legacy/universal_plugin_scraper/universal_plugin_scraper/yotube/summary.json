@@ -1,0 +1,11 @@
+{
+  "start_url": "https://youtube.com/",
+  "visited": 21,
+  "records": 870,
+  "queued_remaining": 180,
+  "status_counts": {
+    "200": 21
+  },
+  "elapsed_seconds": 45.69,
+  "stop_reason": ""
+}
