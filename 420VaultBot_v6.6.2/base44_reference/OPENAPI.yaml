@@ -1,0 +1,95 @@
+openapi: 3.0.3
+info:
+  title: 420VaultBot Website API
+  version: 3.13.0
+  description: Server-to-server API for Base44. All routes require the shared bearer secret. Admin routes also require an acting Discord admin/Vault Overseer ID.
+servers:
+  - url: https://YOUR-420VAULT-API.example/api/v1
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    Guild:
+      in: header
+      name: X-Guild-ID
+      required: true
+      schema: {type: string}
+    User:
+      in: header
+      name: X-Discord-User-ID
+      required: true
+      schema: {type: string}
+paths:
+  /status:
+    get:
+      summary: Bot/API status
+      responses: {'200': {description: OK}}
+  /plans:
+    get:
+      summary: Enabled plans for a guild
+      parameters: [{$ref: '#/components/parameters/Guild'}]
+      responses: {'200': {description: Plan list}}
+  /me:
+    get:
+      summary: Current Discord user's 420Vault state
+      parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}]
+      responses: {'200': {description: User state}}
+  /licenses/me:
+    get:
+      summary: Current user's licenses
+      parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}]
+      responses: {'200': {description: License list}}
+  /licenses/resend:
+    post:
+      summary: Re-send owned license activation DM
+      parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [code], properties: {code: {type: string}}}}}}
+      responses: {'200': {description: DM attempt result}}
+  /subscriptions/me:
+    get:
+      summary: Current user's subscriptions
+      parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}]
+      responses: {'200': {description: Subscription list}}
+  /payments/me:
+    get:
+      summary: Current user's transactions
+      parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}]
+      responses: {'200': {description: Transaction list}}
+  /tickets:
+    get:
+      summary: Current user's tickets
+      parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}]
+      responses: {'200': {description: Ticket list}}
+    post:
+      summary: Create a real Discord support ticket
+      parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [type, subject, details], properties: {type: {type: string, enum: [crash, bug, vault, feature, request, payment, other]}, subject: {type: string}, details: {type: string}}}}}}
+      responses: {'201': {description: Ticket created}}
+  /admin/users:
+    get: {summary: Admin user overview, parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}], responses: {'200': {description: Users}}}
+  /admin/licenses:
+    get: {summary: Admin license list, parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}], responses: {'200': {description: Licenses}}}
+    post:
+      summary: Generate a real admin-grant license and DM it
+      parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [user_id], properties: {user_id: {type: string}, days: {type: integer, nullable: true, minimum: 1, maximum: 3650}}}}}}
+      responses: {'201': {description: License generated}}
+  /admin/licenses/{code}/revoke:
+    post:
+      summary: Revoke license and linked entitlement
+      parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}, {in: path, name: code, required: true, schema: {type: string}}]
+      responses: {'200': {description: Revoked}}
+  /admin/subscriptions:
+    get: {summary: Admin subscription list, parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}], responses: {'200': {description: Subscriptions}}}
+  /admin/transactions:
+    get: {summary: Admin transaction list, parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}], responses: {'200': {description: Transactions}}}
+  /admin/tickets:
+    get: {summary: Admin support tickets, parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}], responses: {'200': {description: Tickets}}}
+  /admin/logs:
+    get: {summary: Admin audit logs, parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}], responses: {'200': {description: Logs}}}
+  /admin/vault:
+    get: {summary: Admin Vault configuration/status/stats, parameters: [{$ref: '#/components/parameters/Guild'}, {$ref: '#/components/parameters/User'}], responses: {'200': {description: Vault state}}}
